@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unity Controller</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    #pad {
+      width: 300px;
+      height: 300px;
+      border: 2px solid #333;
+      position: relative;
+      touch-action: none;
+      user-select: none;
+      margin-top: 20px;
+    }
+    #dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: red;
+      position: absolute;
+      left: 140px;
+      top: 140px;
+    }
+    .row {
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Unity Web Controller</h2>
+
+  <div class="row">
+    <label>WebSocket URL:</label>
+    <input id="wsUrl" value="ws://localhost:3001" style="width: 260px;" />
+  </div>
+
+  <div class="row">
+    <label>Room ID:</label>
+    <input id="roomId" value="default" />
+  </div>
+
+  <div class="row">
+    <button id="connectBtn">Bağlan</button>
+    <span id="status">Bağlı değil</span>
+  </div>
+
+  <div id="pad">
+    <div id="dot"></div>
+  </div>
+
+  <div class="row">
+    <label>Rotation Y:</label>
+    <input id="rotationY" type="range" min="-180" max="180" value="0" />
+    <span id="rotationValue">0</span>
+  </div>
+
+  <script>
+    let ws = null;
+    let isDragging = false;
+
+    const connectBtn = document.getElementById("connectBtn");
+    const statusEl = document.getElementById("status");
+    const wsUrlEl = document.getElementById("wsUrl");
+    const roomIdEl = document.getElementById("roomId");
+    const pad = document.getElementById("pad");
+    const dot = document.getElementById("dot");
+    const rotationY = document.getElementById("rotationY");
+    const rotationValue = document.getElementById("rotationValue");
+
+    rotationY.addEventListener("input", () => {
+      rotationValue.textContent = rotationY.value;
+    });
+
+    connectBtn.addEventListener("click", () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        return;
+      }
+
+      ws = new WebSocket(wsUrlEl.value.trim());
+
+      ws.onopen = () => {
+        statusEl.textContent = "Bağlandı";
+        connectBtn.textContent = "Bağlantıyı Kes";
+
+        ws.send(JSON.stringify({
+          type: "register",
+          role: "controller",
+          roomId: roomIdEl.value.trim() || "default"
+        }));
+      };
+
+      ws.onclose = () => {
+        statusEl.textContent = "Bağlı değil";
+        connectBtn.textContent = "Bağlan";
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = "Hata";
+      };
+
+      ws.onmessage = (event) => {
+        console.log("Server:", event.data);
+      };
+    });
+
+    function sendMove(clientX, clientY) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      const rect = pad.getBoundingClientRect();
+      let x = clientX - rect.left;
+      let y = clientY - rect.top;
+
+      if (x < 0) x = 0;
+      if (y < 0) y = 0;
+      if (x > rect.width) x = rect.width;
+      if (y > rect.height) y = rect.height;
+
+      dot.style.left = `${x - 10}px`;
+      dot.style.top = `${y - 10}px`;
+
+      const normalizedX = (x / rect.width) * 10;
+      const normalizedZ = (y / rect.height) * 10;
+
+      ws.send(JSON.stringify({
+        type: "move",
+        x: normalizedX,
+        y: 0,
+        z: normalizedZ,
+        rotationY: Number(rotationY.value)
+      }));
+    }
+
+    pad.addEventListener("pointerdown", (e) => {
+      isDragging = true;
+      sendMove(e.clientX, e.clientY);
+    });
+
+    pad.addEventListener("pointermove", (e) => {
+      if (!isDragging) return;
+      sendMove(e.clientX, e.clientY);
+    });
+
+    window.addEventListener("pointerup", () => {
+      isDragging = false;
+    });
+  </script>
+</body>
+</html>

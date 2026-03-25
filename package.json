@@ -1,0 +1,20 @@
+{
+  "name": "unity-control-backend",
+  "version": "1.0.0",
+  "description": "WebSocket relay server for Unity and controller clients",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "unity",
+    "websocket",
+    "backend"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}
