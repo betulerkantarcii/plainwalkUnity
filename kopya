@@ -1,0 +1,252 @@
+/* "use client";
+import { useState, useEffect, useRef } from "react";
+import StatusIndicator from "@/components/StatusIndicator";
+import Marker from "@/components/Marker";
+
+export default function Dashboard() {
+  // 1. Oyuncunun GERÇEK konumu (Unity'den gelen anlık konum)
+  const [playerPos, setPlayerPos] = useState({ x: 0, z: 0, yaw: 0, pitch: 0 });
+
+  // 2. Oyuncunun HEDEF konumu (Bizim web'den gönderdiğimiz nokta)
+  const [targetPos, setTargetPos] = useState({ x: null, z: null });
+
+  const [rotSens, setRotSens] = useState({ x: 1, y: 1 });
+  const [isConnected, setIsConnected] = useState(false);
+  const [mapImage, setMapImage] = useState(null);
+
+  const [mapConfig, setMapConfig] = useState({
+    width: 0,
+    heigth: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    top: 0,
+  });
+
+  const socketRef = useRef(null);
+  const padRef = useRef(null);
+  const [rect, setRect] = useState(null);
+
+  const lastTouch = useRef({ x: null, y: null });
+  const longPressTimer = useRef(null);
+  const isMovingMode = useRef(false);
+
+  // Pad referansının boyutlarını al
+  useEffect(() => {
+    if (padRef.current) {
+      setRect(padRef.current.getBoundingClientRect());
+    }
+  }, [padRef, mapImage]); // mapImage değiştiğinde de rect'i güncellemek iyi olabilir
+
+  // WebSocket Bağlantısı
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const socketUrl = `ws://192.168.1.88:3001`;
+    const socket = new WebSocket(socketUrl);
+    socket.binaryType = "arraybuffer";
+
+    socket.onopen = () => setIsConnected(true);
+    socket.onclose = () => setIsConnected(false);
+
+    socket.onmessage = (event) => {
+      const dataView = new DataView(event.data);
+      const type = dataView.getUint8(0);
+
+      if (type === 1) {
+        // Harita verisi ve görseli
+        const leftX = dataView.getFloat32(1, true);
+        const rightX = dataView.getFloat32(5, true);
+        const bottomZ = dataView.getFloat32(9, true);
+        const topZ = dataView.getFloat32(13, true);
+
+        setMapConfig({
+          width: rightX - leftX,
+          heigth: topZ - bottomZ,
+          left: leftX,
+          right: rightX,
+          bottom: bottomZ,
+          top: topZ,
+        });
+
+        const uint8Array = new Uint8Array(event.data);
+        const imageBlob = new Blob([uint8Array.slice(17)], {
+          type: "image/jpeg",
+        });
+
+        setMapImage((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(imageBlob);
+        });
+      } else if (type === 0) {
+        // Oyuncu konum verisi
+        const posX = dataView.getFloat32(1, true);
+        const posZ = dataView.getFloat32(5, true);
+        const rot = dataView.getFloat32(9, true); // Unity'den gelen açı
+
+        // Unity'den gelen anlık konumu kaydet (En kısa dönüş yolu mantığı eklendi)
+        setPlayerPos((prev) => {
+          // Gelen açı ile mevcut açı arasındaki farkı bul (-360 ile +360 arasında bir değer)
+          let delta = (rot - prev.yaw) % 360;
+
+          // Fark 180'den büyükse, ters yönden dönmek daha kısadır
+          if (delta > 180) delta -= 360;
+          else if (delta < -180) delta += 360;
+
+          // CSS'in kafası karışmasın diye açıyı sıfırlamadan, üzerine ekleyerek sonsuza kadar büyütüyoruz/küçültüyoruz
+          return { ...prev, x: posX, z: posZ, yaw: prev.yaw + delta };
+        });
+
+        setTargetPos((prev) => (prev.x === null ? { x: posX, z: posZ } : prev));
+      }
+    };
+
+    socketRef.current = socket;
+    return () => {
+      socket.close();
+      if (mapImage) URL.revokeObjectURL(mapImage);
+    };
+  }, []);
+
+  // Unity'ye veri gönderme
+  const sendToUnity = (unityX, unityZ, yaw, pitch) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      const buffer = new Float32Array([unityX, unityZ, yaw, pitch]);
+      socketRef.current.send(buffer);
+    }
+  };
+
+  // --- SADECE MARKER'A DOKUNULDUĞUNDA ÇALIŞIR ---
+  const handleMarkerTouchStart = (e) => {
+    e.stopPropagation(); // Dokunmanın haritaya geçmesini engeller
+    const touch = e.touches[0];
+    lastTouch.current = { x: touch.clientX, y: touch.clientY };
+    isMovingMode.current = false;
+
+    longPressTimer.current = setTimeout(() => {
+      isMovingMode.current = true;
+      if (navigator.vibrate) navigator.vibrate(50);
+      console.log("📍 Hareket Modu Aktif");
+    }, 500);
+  };
+
+  // --- HARİTAYA (BOŞLUĞA) DOKUNULDUĞUNDA ÇALIŞIR ---
+  const handleMapTouchStart = (e) => {
+    const touch = e.touches[0];
+    lastTouch.current = { x: touch.clientX, y: touch.clientY };
+    isMovingMode.current = false;
+    // Burada sayaç yok, yani boşluğa basılı tutmak hareket modunu açmaz.
+  };
+
+  // --- PARMAK HAREKET ETTİĞİNDE ÇALIŞIR ---
+  const handleTouch = (e) => {
+    e.preventDefault();
+    if (e.touches.length !== 1 || !rect) return;
+
+    const touch = e.touches[0];
+
+    if (isMovingMode.current) {
+      // HAREKET MODU (Unity'ye Target Gönderimi)
+      const percentX = Math.max(
+        0,
+        Math.min(1, (touch.clientX - rect.left) / rect.width),
+      );
+      const percentY = Math.max(
+        0,
+        Math.min(1, (touch.clientY - rect.top) / rect.height),
+      );
+
+      const unityX = mapConfig.left + percentX * mapConfig.width;
+      const unityZ = mapConfig.top - percentY * mapConfig.heigth;
+
+      setTargetPos({ x: unityX, z: unityZ });
+      sendToUnity(unityX, unityZ, playerPos.yaw, playerPos.pitch);
+    } else {
+      // BAKIŞ / ROTASYON MODU
+      if (lastTouch.current.x !== null) {
+        const deltaX = touch.clientX - lastTouch.current.x;
+        const deltaY = touch.clientY - lastTouch.current.y;
+
+        // Ekranda 5 pikselden fazla kaydırma varsa basılı tutma sayacını iptal et
+        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+          clearTimeout(longPressTimer.current);
+        }
+
+        setPlayerPos((prev) => {
+          const newYaw = prev.yaw + deltaX * rotSens.x;
+          let newPitch = prev.pitch + deltaY * rotSens.y;
+          newPitch = Math.max(-90, Math.min(90, newPitch));
+
+          const sendTargetX = targetPos.x !== null ? targetPos.x : prev.x;
+          const sendTargetZ = targetPos.z !== null ? targetPos.z : prev.z;
+
+          sendToUnity(sendTargetX, sendTargetZ, newYaw, newPitch);
+          return { ...prev, yaw: newYaw, pitch: newPitch };
+        });
+      }
+      lastTouch.current = { x: touch.clientX, y: touch.clientY };
+    }
+  };
+
+  // --- DOKUNMA BİTTİĞİNDE ÇALIŞIR ---
+  const handleTouchEnd = () => {
+    clearTimeout(longPressTimer.current);
+    isMovingMode.current = false;
+    lastTouch.current = { x: null, y: null };
+  };
+
+  // Unity Gerçek X ve Z koordinatlarını -1 ile +1 arasına çevirme işlemi
+  const markerPixelX =
+    mapConfig.width > 0
+      ? ((playerPos.x - mapConfig.left) / mapConfig.width) * 2 - 1
+      : 0;
+
+  const markerPixelY =
+    mapConfig.heigth > 0
+      ? ((playerPos.z - mapConfig.bottom) / mapConfig.heigth) * 2 - 1
+      : 0;
+
+  return (
+    <main className="h-screen w-full bg-[#121212] text-[#eee] flex flex-col items-center justify-center overflow-hidden relative select-none touch-none">
+      <StatusIndicator isConnected={isConnected} />
+
+      {/* Debug Penceresi */
+    
+      
+        /* <div className="absolute top-2 left-2 text-xs text-[#00ffcc] font-mono z-10 bg-black/60 p-1 rounded select-none touch-none">
+        <div>
+          Unity: x={playerPos.x.toFixed(2)} z={playerPos.z.toFixed(2)}
+        </div>
+        <div>
+          Config: W={mapConfig.width.toFixed(2)} H={mapConfig.heigth.toFixed(2)}
+        </div>
+        <div>
+          Marker NDC: x={markerPixelX.toFixed(2)} y={markerPixelY.toFixed(2)}
+        </div>
+      </div>
+
+      {/* Harita Alanı */
+      /* <div
+        ref={padRef}
+        onTouchStart={handleMapTouchStart}
+        onTouchMove={handleTouch}
+        onTouchEnd={handleTouchEnd}
+        className="w-[95vw] h-[95vw] max-w-[1000px] max-h-[1000px] border-2 border-[#00ffcc]/30 rounded-3xl relative overflow-hidden bg-black select-none touch-none"
+        style={{
+          backgroundImage: mapImage
+            ? `url(${mapImage})`
+            : "radial-gradient(#333 1px, transparent 1px)",
+          backgroundSize: "100% 100%",
+          backgroundPosition: "center",
+        }}
+      >
+        <Marker
+          x={markerPixelX}
+          y={markerPixelY}
+          rotation={playerPos.yaw}
+          onTouchStart={handleMarkerTouchStart}
+        />
+      </div>
+    </main>
+  );
+} */
